@@ -1,0 +1,150 @@
+apiVersion: redis.redis.opstreelabs.in/v1beta2
+kind: RedisCluster
+metadata:
+  name: redis-cluster
+  namespace: redis
+  labels:
+    app.kubernetes.io/name: redis-cluster
+    app.kubernetes.io/version: "v8"
+    app.kubernetes.io/managed-by: redis-operator
+    environment: production
+spec:
+  # -----------------------------------------------
+  # 集群规格：3主3从，共6节点
+  # -----------------------------------------------
+  clusterSize: 3
+  clusterVersion: v8
+
+  # -----------------------------------------------
+  # 持久化：必须开启
+  # -----------------------------------------------
+  persistenceEnabled: true
+
+  # -----------------------------------------------
+  # Pod 安全上下文（Production 最佳实践）
+  # -----------------------------------------------
+  podSecurityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  # -----------------------------------------------
+  # Redis 主容器配置
+  # -----------------------------------------------
+  kubernetesConfig:
+    image: quay.io/opstree/redis:latest
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    # Redis Operator 需要配置 redisSecret，
+    # 这样它才会为 liveness/readiness 探针添加 -a 密码参数！
+    redisSecret:
+      name: redis-secret
+      key: password
+
+  # -----------------------------------------------
+  # ACL 配置：引用包含 ACL 规则的 Secret
+  # Operator 将 Secret 挂载为卷，Redis 以 --aclfile 方式加载
+  # -----------------------------------------------
+  acl:
+    secret:
+      secretName: redis-acl-secret
+      # Operator 将 key 名作为文件名挂载到 /etc/redis/ 下
+      # 必须与 redis.conf 中 aclfile /etc/redis/user.acl 路径一致
+      items:
+        - key: user.acl
+          path: user.acl
+
+  # -----------------------------------------------
+  # Redis Exporter（监控 sidecar）
+  # -----------------------------------------------
+  redisExporter:
+    enabled: true
+    image: quay.io/opstree/redis-exporter:latest
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    env:
+      - name: REDIS_EXPORTER_INCL_SYSTEM_METRICS
+        value: "true"
+
+  # -----------------------------------------------
+  # Leader（主节点）配置：反亲和性
+  # -----------------------------------------------
+  redisLeader:
+    # 容器安全上下文（v1beta2 中字段名为 securityContext）
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+    affinity:
+      podAntiAffinity:
+        # 硬性要求：禁止任何 Redis Pod 调度到同一 Node
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                    - redis-cluster-leader
+                    - redis-cluster-follower
+            topologyKey: "kubernetes.io/hostname"
+
+  # -----------------------------------------------
+  # Follower（从节点）配置：反亲和性
+  # -----------------------------------------------
+  redisFollower:
+    # 容器安全上下文（v1beta2 中字段名为 securityContext）
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+    affinity:
+      podAntiAffinity:
+        # 硬性要求：禁止任何 Redis Pod 调度到同一 Node
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                    - redis-cluster-follower
+                    - redis-cluster-leader
+            topologyKey: "kubernetes.io/hostname"
+
+  # -----------------------------------------------
+  # 存储配置
+  # -----------------------------------------------
+  storage:
+    # 主数据卷
+    volumeClaimTemplate:
+      spec:
+        storageClassName: standard
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+    # nodeConf 卷（存放 nodes.conf，集群必须）
+    nodeConfVolume: true
+    nodeConfVolumeClaimTemplate:
+      spec:
+        storageClassName: standard
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-cluster-monitor
+  namespace: redis
+  labels:
+    app.kubernetes.io/name: redis-cluster
+    app.kubernetes.io/managed-by: redis-operator
+    # 该 label 需与 Prometheus Operator 的 serviceMonitorSelector 匹配
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: redis-cluster
+      redis_setup_type: cluster
+  namespaceSelector:
+    matchNames:
+      - redis
+  endpoints:
+    - port: redis-exporter
+      interval: 30s
+      scrapeTimeout: 10s
+      path: /metrics
